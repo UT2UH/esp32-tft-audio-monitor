@@ -1,51 +1,51 @@
 #include "Processor.h"
 #include "HammingWindow.h"
-#include "tools/kiss_fftr.h"
 
-Processor::Processor(int window_size)
+
+Processor::Processor(int window_size, uint8_t pressure_scale) :
+  m_window_size(window_size),
+  energy_size(window_size / 2),
+  m_hamming_window(window_size),
+  scale_factor(pressure_scale / 30.f)  // 30 - is the magical number from the original repository
 {
-  m_window_size = window_size;
-  // work out the FFT size
-  m_fft_size = 1;
-  while (m_fft_size < window_size)
-  {
-    m_fft_size *= 2;
-  }
-  // create the hamming window to apply to the samples
-  m_hamming_window = new HammingWindow(m_fft_size);
   // initialise kiss fftr
-  m_cfg = kiss_fftr_alloc(m_fft_size, false, 0, 0);
+  m_cfg = kiss_fftr_alloc(m_window_size, false, 0, 0);
 
-  m_fft_input = static_cast<float *>(malloc(sizeof(float) * m_fft_size));
-  for (int i = 0; i < m_fft_size; i++)
-  {
-    m_fft_input[i] = 0;
-  }
-  int energy_size = m_fft_size / 2;
-  m_fft_output = static_cast<kiss_fft_cpx *>(malloc(sizeof(kiss_fft_cpx) * energy_size));
+  fft_input = static_cast<float *>(calloc(m_window_size, sizeof(float)));
 
-  m_energy = static_cast<float *>(malloc(sizeof(float) * window_size / 4));
+  m_fft_output = static_cast<kiss_fft_cpx *>(calloc(energy_size, sizeof(kiss_fft_cpx)));
+  energy = static_cast<float *>(calloc(energy_size, sizeof(float)));
+
 }
 
-void Processor::update(int16_t *samples)
+void Processor::update(const float *samples, int size)
 {
-  int offset = (m_fft_size - m_window_size) / 2;
-  for (int i = 0; i < m_window_size; i++)
-  {
-    m_fft_input[offset + i] = samples[i] / 30.0f;
+  if (size < m_window_size) {
+    int offset = m_window_size - size;
+    memmove(fft_input, &fft_input[size], offset * sizeof(float));
+    for (int i = 0; i < size; i++)
+    {
+      fft_input[offset + i] = samples[i] * scale_factor;
+    }
+  } else {
+    int i_start = size - m_window_size;
+    for (int i = i_start; i < size; i++)
+    {
+      fft_input[i - i_start] = samples[i] * scale_factor;
+    }
   }
-  // apply the hamming window
-  m_hamming_window->applyWindow(m_fft_input);
-  // do the fft
+
+  m_hamming_window.applyWindow(fft_input);
+
   kiss_fftr(
       m_cfg,
-      m_fft_input,
+      fft_input,
       reinterpret_cast<kiss_fft_cpx *>(m_fft_output));
 
-  for (int i = 0; i < m_window_size / 4; i++)
+  for (int i = 0; i < energy_size; i++)
   {
     const float real = m_fft_output[i].r;
     const float imag = m_fft_output[i].i;
-    m_energy[i] = sqrt((real * real) + (imag * imag));
+    energy[i] = sqrt((real * real) + (imag * imag));
   }
 }

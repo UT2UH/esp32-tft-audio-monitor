@@ -1,72 +1,61 @@
 #include <Arduino.h>
-#include <TFT_eSPI.h>
+#include <M5Display.h>
 #include "UI.h"
-#include "UI/Waveform.h"
-#include "UI/Palette.h"
-#include "UI/GraphicEqualiser.h"
-#include "UI/Spectrogram.h"
 
-// Task to process samples
-void drawing_task(void *param)
+
+UI::UI(TFT_eSPI &display, int window_size) : m_display(display),
+  m_waveform(display, 0, 0, display.width(), display.height() / 2, window_size, WAVEFORM_SCALE_RAW_DATA, Palette::light_blue),
+  m_stalta_ratio_window(display, 0, 0, display.width(), display.height(), window_size, WAVEFORM_SCALE_TRIGGER, Palette::white),
+  m_graphic_equaliser(m_palette, 0, display.height() / 2, display.width(), display.height() / 2, window_size / 2),
+  m_spectrogram(m_palette, 0, 0, display.width(), display.height())
 {
-  UI *ui = reinterpret_cast<UI *>(param);
-  const TickType_t xMaxBlockTime = pdMS_TO_TICKS(1000);
-  while (true)
-  {
-    // wait to be told to redraw
-    uint32_t ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
-    if (ulNotificationValue != 0)
-    {
-      ui->draw();
-    }
-  }
+  log_d("Display is %d x %d\n", display.width(), display.height());
+
+  m_windows.push_back({m_spectrogram});
+  m_windows.push_back({m_waveform, m_graphic_equaliser});
+  m_windows.push_back({m_stalta_ratio_window});
+
+  set_curr_window_visible(true);
 }
 
-UI::UI(TFT_eSPI &display, int window_size) : m_display(display)
-{
-  Serial.printf("Display is %d x %d\n", display.width(), display.height());
-  m_palette = new Palette();
-  m_waveform = new Waveform(display, 0, 0, display.width(), display.height(), window_size);
-  m_graphic_equaliser = new GraphicEqualiser(m_palette, 0, 0, display.width(), display.height(), window_size);
-  m_spectrogram = new Spectrogram(m_palette, 0, 0, display.width(), display.height());
-  // start off with the spectrogram hidden
-  m_waveform->visible = true;
-  m_spectrogram->visible = false;
-  m_graphic_equaliser->visible = false;
-  // create a drawing task to update our UI
-  xTaskCreatePinnedToCore(drawing_task, "Drawing Task", 4096, this, 1, &m_draw_task_handle, 1);
+void UI::set_curr_window_visible(bool visible) {
+  for (Component& c : m_windows[m_curr_window_id]) {
+    c.visible = visible;
+  }
 }
 
 void UI::toggle_display()
 {
-  bool tmp = m_graphic_equaliser->visible;
-  m_graphic_equaliser->visible = m_spectrogram->visible;
-  m_spectrogram->visible = m_waveform->visible;
-  m_waveform->visible = tmp;
+  set_curr_window_visible(false);
+  m_curr_window_id = (m_curr_window_id + 1) % m_windows.size();
+  set_curr_window_visible(true);
 }
 
-void UI::update(float *samples, float *fft)
+void UI::update(Processor &processor, const float *samples, int size)
 {
-  m_waveform->update(samples);
-  m_graphic_equaliser->update(fft);
-  m_spectrogram->update(fft);
-  xTaskNotify(m_draw_task_handle, 1, eIncrement);
+  float *ratios = (float*) malloc(size * sizeof(float));
+  bool detected = m_stalta_ratio.process(samples, ratios, size);
+  m_stalta_ratio_window.update(ratios, size);
+  free(ratios);
+  m_waveform.update(samples, size);
+  m_graphic_equaliser.update(processor.energy);
+  m_spectrogram.update(processor.energy, processor.energy_size, detected);
+  draw();
 }
 
-unsigned long draw_time = 0;
-int draw_count = 0;
 void UI::draw()
 {
   auto start = millis();
-  m_spectrogram->draw(m_display);
-  m_graphic_equaliser->draw(m_display);
-  m_waveform->draw(m_display);
+  m_spectrogram.draw(m_display);
+  m_graphic_equaliser.draw(m_display);
+  m_waveform.draw(m_display);
+  m_stalta_ratio_window.draw(m_display);
   auto end = millis();
   draw_time += end - start;
   draw_count++;
   if (draw_count == 20)
   {
-    Serial.printf("Drawing time %ld\n", draw_time / 20);
+    log_d("Drawing time: %ld ms", draw_time / 20);
     draw_count = 0;
     draw_time = 0;
   }

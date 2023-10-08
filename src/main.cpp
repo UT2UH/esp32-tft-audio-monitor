@@ -1,22 +1,38 @@
 #include <Arduino.h>
-#include <TFT_eSPI.h>
+#include <M5StX.h>
+#include <M5ez.h>
 #include "Application.h"
 
 Application *application;
 
 void setup()
 {
-  Serial.begin(115200);
-  TFT_eSPI *display = new TFT_eSPI();
-  display->begin();
-  display->setRotation(1);
-
-  application = new Application(*display);
-  application->begin();
+  ez.begin();
+  log_d("Heap avail after ez.begin: %lu Kb", esp_get_free_heap_size() / 1024);
+  application = new Application(M5.lcd);
 }
+
+
+void show_spectrogram() {
+  if (!application->begin()) {
+    return;
+  }
+  log_d("Heap avail: %lu Kb", esp_get_free_heap_size() / 1024);
+
+  while (!M5.BtnA.wasPressed()) {
+    application->loop();
+    M5.BtnA.read();
+    delay(100);
+  }
+
+  application->stop();
+}
+
 
 void loop()
 {
-  // service the application
-  application->loop();
+  ezMenu topmenu("Top Menu");
+  topmenu.buttons("up # select # down");
+  topmenu.addItem("Spectrogram", show_spectrogram); 
+  topmenu.run();
 }
